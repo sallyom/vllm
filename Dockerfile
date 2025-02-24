@@ -285,4 +285,10 @@ ENTRYPOINT ["./sagemaker-entrypoint.sh"]
 FROM vllm-openai-base AS vllm-openai
 
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+FROM vllm-openai-base AS vllm-openai-otlp
+
+COPY requirements-otlp.txt requirements-otlp.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r requirements-otlp.txt
+ENTRYPOINT ["opentelemetry-instrument", "--metrics_exporter", "otlp", "python3", "-m", "vllm.entrypoints.openai.api_server"]
 #################### OPENAI API SERVER ####################

@@ -11,6 +11,7 @@ import torch
 from prometheus_client import start_http_server
 from tqdm import tqdm
 
+from opentelemetry.instrumentation import auto_instrumentation
 from vllm.engine.arg_utils import AsyncEngineArgs, nullable_str
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.logger import RequestLogger, logger
@@ -431,6 +432,7 @@ if __name__ == "__main__":
     # to publish metrics at the /metrics endpoint.
     if args.enable_metrics:
         logger.info("Prometheus metrics enabled")
+        auto_instrumentation.initialize()
         start_http_server(port=args.port, addr=args.url)
     else:
         logger.info("Prometheus metrics disabled")

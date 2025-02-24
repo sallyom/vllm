@@ -1,0 +1,20 @@
+FROM docker.io/vllm/vllm-openai:latest
+
+COPY . .
+RUN pip install \
+    "opentelemetry-distro[otlp]" \
+    "opentelemetry-instrumentation" \
+    "opentelemetry-sdk" \
+    "opentelemetry-api" \
+    "opentelemetry-exporter-otlp" \
+    "opentelemetry-semantic-conventions-ai"
+
+RUN opentelemetry-bootstrap -a install && VLLM_USE_PRECOMPILED=1 pip install --editable .
+ENV OTEL_TRACES_EXPORTER="otlp"
+ENV OTEL_METRICS_EXPORTER="otlp"
+ENV OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE="delta"
+ENV OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
+ENV OTEL_RESOURCE_ATTRIBUTES="service.name=vllm"
+ENV OTEL_SERVICE_NAME="vllm"
+
+ENTRYPOINT ["opentelemetry-instrument", "python3", "-m", "vllm.entrypoints.openai.api_server"]
