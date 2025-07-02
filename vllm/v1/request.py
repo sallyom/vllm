@@ -5,6 +5,7 @@ import enum
 import time
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from collections.abc import Mapping
 
 from vllm.multimodal.inputs import MultiModalKwargsItem, PlaceholderRange
 from vllm.pooling_params import PoolingParams
@@ -40,6 +41,7 @@ class Request:
         priority: int = 0,
         block_hasher: Optional[Callable[["Request"],
                                         list["BlockHash"]]] = None,
+        trace_headers: Optional[Mapping[str, str]] = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -105,7 +107,8 @@ class Request:
         # they should also be updated simultaneously.
         self.output_token_ids = ConstantList(self._output_token_ids)
         self.all_token_ids = ConstantList(self._all_token_ids)
-
+        # trace_headers
+        self.trace_headers = trace_headers
         # State
         # The number of tokens with prefix cache hits.
         self.num_cached_tokens = -1
@@ -151,6 +154,7 @@ class Request:
             cache_salt=request.cache_salt,
             priority=request.priority,
             block_hasher=block_hasher,
+            trace_headers=request.trace_headers,
         )
 
     def append_output_token_ids(
