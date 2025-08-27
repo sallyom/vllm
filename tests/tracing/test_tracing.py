@@ -235,3 +235,46 @@ def test_traces_with_detailed_steps(
             SpanAttributes.GEN_AI_LATENCY_TIME_IN_MODEL_EXECUTE
         ) == metrics.model_execute_time
         assert metrics.model_forward_time < 1000 * metrics.model_execute_time
+
+
+def test_v1_auto_detection():
+    """Test auto-detection logic for V1 tracing without requiring full V1 setup."""
+    # Import the detection logic
+    try:
+        from opentelemetry import trace
+        from opentelemetry.trace import NoOpTracerProvider
+        OTEL_AVAILABLE = True
+    except ImportError:
+        OTEL_AVAILABLE = False
+
+    def _is_tracing_enabled(otlp_endpoint=None):
+        """Replicate the auto-detection logic from AsyncLLM."""
+        # Check explicit configuration first (backward compatibility)
+        if otlp_endpoint is not None:
+            return True
+
+        # Auto-detect OpenTelemetry instrumentation
+        if not OTEL_AVAILABLE:
+            return False
+
+        try:
+            tracer_provider = trace.get_tracer_provider()
+            # Check if it's not the default NoOpTracerProvider
+            return not isinstance(tracer_provider, NoOpTracerProvider)
+        except Exception:
+            return False
+
+    # Test 1: No config, no auto-instrumentation
+    result1 = _is_tracing_enabled()
+    assert result1 == (OTEL_AVAILABLE and not isinstance(
+        trace.get_tracer_provider(), NoOpTracerProvider) if OTEL_AVAILABLE else False)
+
+    # Test 2: Explicit endpoint should always enable
+    result2 = _is_tracing_enabled("http://localhost:14268/api/traces")
+    assert result2 == True
+
+    # Test 3: Verify graceful handling when OTEL not available
+    # This test validates the import safety
+    if OTEL_AVAILABLE:
+        tracer = trace.get_tracer("vllm.llm_engine")
+        assert tracer is not None

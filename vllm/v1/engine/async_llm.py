@@ -26,6 +26,12 @@ from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 from vllm.tasks import SupportedTask
 from vllm.tracing import init_tracer
+try:
+    from opentelemetry import trace
+    from opentelemetry.trace import NoOpTracerProvider
+    OTEL_AVAILABLE = True
+except ImportError:
+    OTEL_AVAILABLE = False
 from vllm.transformers_utils.config import (
     maybe_register_config_serialize_by_value)
 from vllm.transformers_utils.tokenizer import AnyTokenizer
@@ -120,10 +126,15 @@ class AsyncLLM(EngineClient):
         # OutputProcessor (converts EngineCoreOutputs --> RequestOutput).
         self.output_processor = OutputProcessor(self.tokenizer,
                                                 log_stats=self.log_stats)
-        if self.observability_config.otlp_traces_endpoint is not None:
-            tracer = init_tracer(
-                "vllm.llm_engine",
-                self.observability_config.otlp_traces_endpoint)
+        if self._is_tracing_enabled():
+            if self.observability_config.otlp_traces_endpoint is not None:
+                # Backward compatibility: use manual initialization
+                tracer = init_tracer(
+                    "vllm.llm_engine",
+                    self.observability_config.otlp_traces_endpoint)
+            else:
+                # Auto-detection: use global tracer from auto-instrumentation
+                tracer = trace.get_tracer("vllm.llm_engine")
             self.output_processor.tracer = tracer
 
         # EngineCore (starts the engine in background process).
@@ -575,8 +586,30 @@ class AsyncLLM(EngineClient):
 
         return self.tokenizer.get_lora_tokenizer(lora_request)
 
+    def _is_tracing_enabled(self) -> bool:
+        """Auto-detect if OpenTelemetry tracing is enabled.
+
+        Returns True if:
+        1. OTLP endpoint is explicitly configured, OR
+        2. Auto-instrumentation is detected (active TracerProvider)
+        """
+        # Check explicit configuration first (backward compatibility)
+        if self.observability_config.otlp_traces_endpoint is not None:
+            return True
+
+        # Auto-detect OpenTelemetry instrumentation
+        if not OTEL_AVAILABLE:
+            return False
+
+        try:
+            tracer_provider = trace.get_tracer_provider()
+            # Check if it's not the default NoOpTracerProvider
+            return not isinstance(tracer_provider, NoOpTracerProvider)
+        except Exception:
+            return False
+
     async def is_tracing_enabled(self) -> bool:
-        return self.observability_config.otlp_traces_endpoint is not None
+        return self._is_tracing_enabled()
 
     async def do_log_stats(
         self,
