@@ -2770,6 +2770,7 @@ class GPUModelRunner(
         bool,
         torch.Tensor | None,
         CUDAGraphStat | None,
+        "DboStats | None",
     ]:
         num_tokens_padded = self._pad_for_sequence_parallelism(num_tokens)
         uniform_decode = (
@@ -2803,7 +2804,7 @@ class GPUModelRunner(
 
         # Extra coordination when running data-parallel since we need to coordinate
         # across ranks
-        should_ubatch, num_tokens_across_dp = False, None
+        should_ubatch, num_tokens_across_dp, dbo_stats = False, None, None
         if self.vllm_config.parallel_config.data_parallel_size > 1:
             # Disable DP padding when running eager to avoid excessive padding when
             # running prefills. This lets us set cudagraph_mode="NONE" on the prefiller
@@ -2813,7 +2814,7 @@ class GPUModelRunner(
                 self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
             )
 
-            should_ubatch, num_tokens_across_dp = coordinate_batch_across_dp(
+            should_ubatch, num_tokens_across_dp, dbo_stats = coordinate_batch_across_dp(
                 num_tokens_unpadded=num_tokens,
                 parallel_config=self.parallel_config,
                 allow_microbatching=allow_microbatching,
@@ -2849,6 +2850,7 @@ class GPUModelRunner(
             should_ubatch,
             num_tokens_across_dp,
             cudagraph_stats,
+            dbo_stats,
         )
 
     def _register_layerwise_nvtx_hooks(self) -> None:
@@ -2984,6 +2986,7 @@ class GPUModelRunner(
                     should_ubatch,
                     num_tokens_across_dp,
                     cudagraph_stats,
+                    dbo_stats,
                 ) = self._determine_batch_execution_and_padding(
                     num_tokens=num_tokens_unpadded,
                     num_reqs=num_reqs,
@@ -3314,6 +3317,7 @@ class GPUModelRunner(
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
                 eplb_stats=eplb_stats,
+                dbo_stats=dbo_stats,
             )
 
         if not self.use_async_scheduling:
@@ -4031,7 +4035,7 @@ class GPUModelRunner(
 
         num_sampled_tokens = np.ones(num_reqs, dtype=np.int32)
 
-        _cudagraph_mode, batch_desc, should_ubatch, num_tokens_across_dp, _ = (
+        _cudagraph_mode, batch_desc, should_ubatch, num_tokens_across_dp, _, _ = (
             self._determine_batch_execution_and_padding(
                 num_tokens=num_tokens_unpadded,
                 num_reqs=num_reqs,
