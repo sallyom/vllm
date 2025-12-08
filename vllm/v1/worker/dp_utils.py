@@ -56,14 +56,21 @@ def _run_ar(
     return tensor
 
 
-def _post_process_ubatch(tensor: torch.Tensor) -> bool:
+def _post_process_ubatch(tensor: torch.Tensor) -> tuple[bool, str]:
+    """
+    Post-process ubatching decision.
+
+    Returns:
+        (should_ubatch, fallout_reason)
+        fallout_reason is "" if ubatching succeeds, otherwise indicates why it failed.
+    """
     orig_num_tokens_tensor = tensor[0, :]
     padded_num_tokens_tensor = tensor[1, :]
 
     # First determine if we are going to be ubatching.
     should_ubatch: bool = bool(torch.all(tensor[2] == 1).item())
     if not should_ubatch:
-        return False
+        return False, "coordination_failure"
     # If the DP ranks are planning to ubatch, make sure that
     # there are no "empty" second ubatches
     orig_min_num_tokens = int(orig_num_tokens_tensor.min().item())
@@ -73,7 +80,8 @@ def _post_process_ubatch(tensor: torch.Tensor) -> bool:
             "Aborting ubatching %s %s", orig_min_num_tokens, padded_max_num_tokens
         )
         should_ubatch = False
-    return should_ubatch
+        return False, "empty_second_ubatch"
+    return True, ""
 
 
 def _post_process_dp_padding(tensor: torch.Tensor, should_dp_pad: bool) -> torch.Tensor:
@@ -107,7 +115,7 @@ def _synchronize_dp_ranks(
     should_attempt_dp_padding: bool,
     cudagraph_mode: int,
     parallel_config: ParallelConfig,
-) -> tuple[bool, torch.Tensor | None, int]:
+) -> tuple[bool, torch.Tensor | None, int, str]:
     """
     1. Decides if each DP rank is going to microbatch. Either all ranks
     run with microbatching or none of them do.
@@ -123,6 +131,7 @@ def _synchronize_dp_ranks(
         num_tokens_after_padding: A tensor containing the total number of
         tokens per-microbatch for each DP rank including any DP padding.
         synced_cudagraph_mode: The synchronized cudagraph mode (min across ranks)
+        fallout_reason: Reason for DBO fallout if it occurred, "" otherwise
     ]
 
     """
@@ -146,7 +155,7 @@ def _synchronize_dp_ranks(
     assert should_attempt_dp_padding == should_dp_pad
 
     # Check conditions for microbatching
-    should_ubatch = _post_process_ubatch(tensor)
+    should_ubatch, fallout_reason = _post_process_ubatch(tensor)
 
     if should_ubatch and not should_dp_pad:
         logger.debug_once(
@@ -167,7 +176,7 @@ def _synchronize_dp_ranks(
     # Synchronize cudagraph_mode across ranks (take min)
     synced_cudagraph_mode = _post_process_cudagraph_mode(tensor)
 
-    return should_ubatch, num_tokens_after_padding, synced_cudagraph_mode
+    return should_ubatch, num_tokens_after_padding, synced_cudagraph_mode, fallout_reason
 
 
 def coordinate_batch_across_dp(
@@ -226,15 +235,20 @@ def coordinate_batch_across_dp(
     if num_tokens_padded is None:
         num_tokens_padded = num_tokens_unpadded
 
-    (should_ubatch, num_tokens_after_padding, synced_cudagraph_mode) = (
-        _synchronize_dp_ranks(
-            num_tokens_unpadded,
-            num_tokens_padded,
-            should_attempt_ubatching,
-            allow_dp_padding,
-            cudagraph_mode,
-            parallel_config,
-        )
+    (
+        should_ubatch,
+        num_tokens_after_padding,
+        synced_cudagraph_mode,
+        fallout_reason,
+    ) = _synchronize_dp_ranks(
+        num_tokens_unpadded,
+        num_tokens_padded,
+        should_attempt_ubatching,
+        allow_dp_padding,
+        cudagraph_mode,
+        parallel_config,
     )
 
+    # TODO: Return DboStats with fallout_reason in future
+    # For now, return cudagraph_mode for upstream compatibility
     return (should_ubatch, num_tokens_after_padding, synced_cudagraph_mode)
