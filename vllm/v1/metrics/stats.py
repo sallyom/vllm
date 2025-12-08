@@ -161,6 +161,49 @@ class KVCacheEvictionEvent:
 
 
 @dataclass
+class EplbStats:
+    """Stats for Expert-Parallel Load Balancing (EPLB)."""
+
+    avg_tokens: float = 0.0
+    """Average token load across all EP ranks."""
+
+    max_tokens: float = 0.0
+    """Maximum token load across all EP ranks."""
+
+    balancedness: float = 0.0
+    """Load balancedness ratio (avg_tokens / max_tokens)."""
+
+    layer: int = 0
+    """MoE layer index for these stats."""
+
+    model_name: str = ""
+    """Model name for multi-model scenarios."""
+
+    rearrangement_duration: float = 0.0
+    """Duration of last rearrangement in seconds (0 if no rearrangement)."""
+
+
+@dataclass
+class DboStats:
+    """Stats for Dual Batch Overlap (DBO)."""
+
+    prefill_active: bool = False
+    """Whether DBO is currently active for prefill."""
+
+    decode_active: bool = False
+    """Whether DBO is currently active for decode."""
+
+    first_ubatch_tokens: int = 0
+    """Token count in the first ubatch."""
+
+    second_ubatch_tokens: int = 0
+    """Token count in the second ubatch."""
+
+    fallout_reason: str = ""
+    """Reason for DBO fallout if it occurred ('', 'empty_second_ubatch', etc.)."""
+
+
+@dataclass
 class SchedulerStats:
     """Stats associated with the scheduler."""
 
@@ -185,6 +228,12 @@ class SchedulerStats:
     running_lora_adapters: dict[str, int] = field(default_factory=dict)
 
     cudagraph_stats: CUDAGraphStat | None = None
+
+    eplb_stats: EplbStats | None = None
+    """EPLB metrics when enable_eplb is True."""
+
+    dbo_stats: DboStats | None = None
+    """DBO metrics when DBO is enabled."""
 
 
 @dataclass
