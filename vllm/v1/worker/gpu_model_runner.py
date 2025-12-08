@@ -3280,6 +3280,25 @@ class GPUModelRunner(
 
         with record_function_or_nullcontext("gpu_model_runner: eplb"):
             self.eplb_step()
+
+        # Extract EPLB metrics if available
+        eplb_stats = None
+        if self.eplb_state and self.parallel_config.eplb_config.log_balancedness:
+            # Get the first model's metrics (for multi-model scenarios, would need to aggregate)
+            if self.eplb_state.latest_balancedness_metrics:
+                model_name, metrics = next(iter(self.eplb_state.latest_balancedness_metrics.items()))
+                from vllm.v1.metrics.stats import EplbStats
+                eplb_stats = EplbStats(
+                    avg_tokens=metrics["avg_tokens"],
+                    max_tokens=metrics["max_tokens"],
+                    balancedness=metrics["balancedness"],
+                    layer=0,  # Aggregated across layers
+                    model_name=model_name,
+                    rearrangement_duration=self.eplb_state.last_rearrangement_duration,
+                )
+                # Reset rearrangement duration after reporting
+                self.eplb_state.last_rearrangement_duration = 0.0
+
         with record_function_or_nullcontext("gpu_model_runner: ModelRunnerOutput"):
             output = ModelRunnerOutput(
                 req_ids=req_ids_output_copy,
@@ -3294,6 +3313,7 @@ class GPUModelRunner(
                 else None,
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
+                eplb_stats=eplb_stats,
             )
 
         if not self.use_async_scheduling:

@@ -13,8 +13,11 @@ from vllm.v1.core.sched.output import SchedulerOutput
 
 if TYPE_CHECKING:
     from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
+    from vllm.v1.metrics.stats import DboStats, EplbStats
 else:
     KVConnectorStats = object
+    DboStats = object
+    EplbStats = object
 
 
 class LogprobsLists(NamedTuple):
@@ -164,6 +167,10 @@ class ModelRunnerOutput:
     pooler_output: list[torch.Tensor | None]
 
     kv_connector_output: KVConnectorOutput | None = None
+
+    # EPLB and DBO metrics (optional, populated when enabled)
+    eplb_stats: "EplbStats | None" = None
+    dbo_stats: "DboStats | None" = None
 
     ec_connector_output: ECConnectorOutput | None = None
 
