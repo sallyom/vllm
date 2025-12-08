@@ -1221,7 +1221,11 @@ class Scheduler(SchedulerInterface):
 
         if (
             stats := self.make_stats(
-                spec_decoding_stats, kv_connector_stats, cudagraph_stats
+                spec_decoding_stats,
+                kv_connector_stats,
+                cudagraph_stats,
+                model_runner_output.eplb_stats,
+                model_runner_output.dbo_stats,
             )
         ) is not None:
             # Return stats to only one of the front-ends.
@@ -1444,6 +1448,8 @@ class Scheduler(SchedulerInterface):
         spec_decoding_stats: SpecDecodingStats | None = None,
         kv_connector_stats: KVConnectorStats | None = None,
         cudagraph_stats: CUDAGraphStat | None = None,
+        eplb_stats: "EplbStats | None" = None,
+        dbo_stats: "DboStats | None" = None,
     ) -> SchedulerStats | None:
         if not self.log_stats:
             return None
@@ -1469,6 +1475,8 @@ class Scheduler(SchedulerInterface):
             spec_decoding_stats=spec_stats,
             kv_connector_stats=connector_stats_payload,
             cudagraph_stats=cudagraph_stats,
+            eplb_stats=eplb_stats,
+            dbo_stats=dbo_stats,
         )
 
     def make_spec_decoding_stats(
