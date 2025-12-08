@@ -221,7 +221,7 @@ class EplbState:
         """
         Current step in the sliding window.
 
-        Different from `expert_rearrangement_step`, 
+        Different from `expert_rearrangement_step`,
         each EP rank may have its own `expert_load_window_step`.
         """
         self.expert_load_window_size: int = 0
@@ -259,6 +259,16 @@ class EplbState:
         self.cuda_device_index: int | None = None
         """
         CUDA device index for the async EPLB worker thread.
+        """
+        # Store latest balancedness metrics for Prometheus export
+        self.latest_balancedness_metrics: dict[str, dict[str, float]] = {}
+        """
+        Latest balancedness metrics per model.
+        Format: {model_name: {'avg_tokens': float, 'max_tokens': float, 'balancedness': float}}
+        """
+        self.last_rearrangement_duration: float = 0.0
+        """
+        Duration of the last EPLB rearrangement operation in seconds.
         """
         if self.device.type == "cuda":
             self.cuda_device_index = self.device.index
@@ -583,6 +593,13 @@ class EplbState:
                 avg_tokens, max_tokens = tokens_tensors
                 balancedness = avg_tokens / max_tokens if max_tokens > 0 else 0.0
 
+                # Store metrics for Prometheus export
+                self.latest_balancedness_metrics[eplb_model_state.model_name] = {
+                    "avg_tokens": avg_tokens,
+                    "max_tokens": max_tokens,
+                    "balancedness": balancedness,
+                }
+
                 if ep_group.rank() == 0:
                     logger.info(
                         "EPLB step: %d for model %s: avg_tokens=%.2f, "
@@ -686,9 +703,9 @@ class EplbState:
 
         time_start = None
         is_main_rank = ep_rank == 0
+        torch.cuda.synchronize()  # Sync for all ranks to get accurate timing
+        time_start = time.perf_counter()
         if is_main_rank:
-            torch.cuda.synchronize()
-            time_start = time.perf_counter()
             logger.info(
                 "Rearranging experts %s %s...",
                 "(async mode)" if self.is_async else "sync mode",
@@ -847,14 +864,16 @@ class EplbState:
                     eplb_model_state.logical_replica_count.copy_(
                         new_logical_replica_count
                     )
+                torch.cuda.synchronize()
+                time_end = time.perf_counter()
+                rearrangement_duration = time_end - time_start
+                # Store for Prometheus metrics
+                self.last_rearrangement_duration = rearrangement_duration
                 if is_main_rank:
-                    assert time_start is not None
-                    torch.cuda.synchronize()
-                    time_end = time.perf_counter()
                     logger.info(
                         "Rearranged experts%sin %.2f seconds.",
                         " (profile) " if is_profile else " ",
-                        time_end - time_start,
+                        rearrangement_duration,
                     )
             else:
                 device = eplb_model_state.physical_to_logical_map.device

@@ -408,6 +408,15 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             vllm_config, labelnames, per_engine_labelvalues
         )
 
+        # Track state for throughput calculation
+        self.last_throughput_update_time: dict[int, float] = {
+            idx: time.time() for idx in engine_indexes
+        }
+        self.throughput_prompt_tokens: dict[int, int] = {idx: 0 for idx in engine_indexes}
+        self.throughput_generation_tokens: dict[int, int] = {
+            idx: 0 for idx in engine_indexes
+        }
+
         #
         # Scheduler state
         #
@@ -971,6 +980,117 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 ],
             )
 
+        #
+        # DBO (Dual Batch Overlap) metrics
+        #
+        gauge_dbo_active = self._gauge_cls(
+            name="vllm:dbo_active",
+            documentation="Whether DBO is currently engaged (1=active, 0=inactive)",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["phase"],
+        )
+        self.gauge_dbo_active = {}
+        for phase in ["prefill", "decode"]:
+            self.gauge_dbo_active[phase] = {
+                idx: gauge_dbo_active.labels(model_name, str(idx), phase)
+                for idx in engine_indexes
+            }
+
+        counter_dbo_fallout = self._counter_cls(
+            name="vllm:dbo_fallout_total",
+            documentation="Count of DBO fallout events",
+            labelnames=labelnames + ["reason"],
+        )
+        self.counter_dbo_fallout = {}
+        for reason in ["empty_second_ubatch", "coordination_failure", "other"]:
+            self.counter_dbo_fallout[reason] = {
+                idx: counter_dbo_fallout.labels(model_name, str(idx), reason)
+                for idx in engine_indexes
+            }
+
+        histogram_ubatch_size = self._histogram_cls(
+            name="vllm:ubatch_token_count",
+            documentation="Distribution of ubatch sizes in tokens",
+            buckets=[1, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096],
+            labelnames=labelnames + ["ubatch_index"],
+        )
+        self.histogram_ubatch_size = {}
+        for ubatch_idx in ["first", "second"]:
+            self.histogram_ubatch_size[ubatch_idx] = {
+                idx: histogram_ubatch_size.labels(model_name, str(idx), ubatch_idx)
+                for idx in engine_indexes
+            }
+
+        #
+        # Per-engine throughput gauges
+        #
+        gauge_prompt_throughput = self._gauge_cls(
+            name="vllm:prompt_throughput_toks_per_s",
+            documentation="Prompt throughput in tokens/s",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_prompt_throughput = make_per_engine(
+            gauge_prompt_throughput, engine_indexes, model_name
+        )
+
+        gauge_generation_throughput = self._gauge_cls(
+            name="vllm:generation_throughput_toks_per_s",
+            documentation="Generation throughput in tokens/s",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_generation_throughput = make_per_engine(
+            gauge_generation_throughput, engine_indexes, model_name
+        )
+
+        #
+        # EPLB (Expert-Parallel Load Balancing) metrics
+        #
+        gauge_eplb_balancedness = self._gauge_cls(
+            name="vllm:eplb_balancedness_ratio",
+            documentation="EPLB load balancedness ratio (avg/max load across ranks)",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["layer"],
+        )
+        # Layer labels will be added dynamically when recording
+        self.gauge_eplb_balancedness = gauge_eplb_balancedness
+
+        gauge_expert_load_max = self._gauge_cls(
+            name="vllm:expert_load_max_tokens",
+            documentation="Maximum expert load in tokens across all ranks",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["layer"],
+        )
+        self.gauge_expert_load_max = gauge_expert_load_max
+
+        gauge_expert_load_avg = self._gauge_cls(
+            name="vllm:expert_load_avg_tokens",
+            documentation="Average expert load in tokens across all ranks",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames + ["layer"],
+        )
+        self.gauge_expert_load_avg = gauge_expert_load_avg
+
+        counter_eplb_rearrangements = self._counter_cls(
+            name="vllm:eplb_rearrangements_total",
+            documentation="Count of EPLB expert rearrangement events",
+            labelnames=labelnames,
+        )
+        self.counter_eplb_rearrangements = make_per_engine(
+            counter_eplb_rearrangements, engine_indexes, model_name
+        )
+
+        histogram_eplb_rearrangement_duration = self._histogram_cls(
+            name="vllm:eplb_rearrangement_duration_seconds",
+            documentation="Duration of EPLB rearrangement operations",
+            buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0],
+            labelnames=labelnames,
+        )
+        self.histogram_eplb_rearrangement_duration = make_per_engine(
+            histogram_eplb_rearrangement_duration, engine_indexes, model_name
+        )
+
     def log_metrics_info(self, type: str, config_obj: SupportsMetricsInfo):
         metrics_info = config_obj.metrics_info()
         metrics_info["engine"] = ""
@@ -1086,6 +1206,27 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             iteration_stats.num_prompt_tokens + iteration_stats.num_generation_tokens
         )
 
+        # Update throughput tracking
+        self.throughput_prompt_tokens[engine_idx] += iteration_stats.num_prompt_tokens
+        self.throughput_generation_tokens[engine_idx] += (
+            iteration_stats.num_generation_tokens
+        )
+
+        # Calculate and update throughput gauges every ~10 seconds
+        now = time.time()
+        time_delta = now - self.last_throughput_update_time[engine_idx]
+        if time_delta >= 10.0:  # Update throughput gauges every 10 seconds
+            if time_delta > 0:
+                prompt_tput = self.throughput_prompt_tokens[engine_idx] / time_delta
+                gen_tput = self.throughput_generation_tokens[engine_idx] / time_delta
+                self.gauge_prompt_throughput[engine_idx].set(prompt_tput)
+                self.gauge_generation_throughput[engine_idx].set(gen_tput)
+
+            # Reset counters
+            self.throughput_prompt_tokens[engine_idx] = 0
+            self.throughput_generation_tokens[engine_idx] = 0
+            self.last_throughput_update_time[engine_idx] = now
+
         for max_gen_tokens in iteration_stats.max_num_generation_tokens_iter:
             self.histogram_max_num_generation_tokens_request[engine_idx].observe(
                 max_gen_tokens
@@ -1150,6 +1291,43 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 weights_offloaded
             )
             self.gauge_engine_sleep_state["awake"][engine_idx].set(awake)
+
+    def record_eplb_stats(
+        self,
+        avg_tokens: float,
+        max_tokens: float,
+        balancedness: float,
+        layer: int,
+        model_name: str,
+        engine_idx: int = 0,
+    ):
+        """Record EPLB load balancing metrics for a specific layer."""
+        self.gauge_eplb_balancedness.labels(model_name, str(engine_idx), str(layer)).set(
+            balancedness
+        )
+        self.gauge_expert_load_max.labels(model_name, str(engine_idx), str(layer)).set(
+            max_tokens
+        )
+        self.gauge_expert_load_avg.labels(model_name, str(engine_idx), str(layer)).set(
+            avg_tokens
+        )
+
+    def record_eplb_rearrangement(self, duration: float, engine_idx: int = 0):
+        """Record an EPLB rearrangement event."""
+        self.counter_eplb_rearrangements[engine_idx].inc()
+        self.histogram_eplb_rearrangement_duration[engine_idx].observe(duration)
+
+    def record_dbo_state(self, active: bool, phase: str, engine_idx: int = 0):
+        """Record DBO active/inactive state for a phase (prefill or decode)."""
+        self.gauge_dbo_active[phase][engine_idx].set(1 if active else 0)
+
+    def record_dbo_fallout(self, reason: str, engine_idx: int = 0):
+        """Record a DBO fallout event with reason."""
+        self.counter_dbo_fallout[reason][engine_idx].inc()
+
+    def record_ubatch_size(self, token_count: int, ubatch_index: str, engine_idx: int = 0):
+        """Record ubatch size. ubatch_index should be 'first' or 'second'."""
+        self.histogram_ubatch_size[ubatch_index][engine_idx].observe(token_count)
 
     def log_engine_initialized(self):
         self.log_metrics_info("cache_config", self.vllm_config.cache_config)
