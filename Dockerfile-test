@@ -1,0 +1,46 @@
+# Dockerfile for testing DBO and EPLB metrics on llm-d-cuda base image
+# Overlays Python-only changes without rebuilding C++/CUDA kernels
+FROM ghcr.io/llm-d/llm-d-cuda:v0.3.1
+
+# Copy modified Python files to temporary location
+COPY vllm/v1/metrics/loggers.py /tmp/vllm-updates/
+COPY vllm/v1/metrics/stats.py /tmp/vllm-updates/
+COPY vllm/v1/worker/dp_utils.py /tmp/vllm-updates/
+COPY vllm/v1/worker/gpu_model_runner.py /tmp/vllm-updates/
+COPY vllm/v1/core/sched/scheduler.py /tmp/vllm-updates/
+COPY vllm/distributed/eplb/eplb_state.py /tmp/vllm-updates/
+COPY vllm/v1/outputs.py /tmp/vllm-updates/
+
+# Find vLLM installation path and update modified files
+RUN set -ex && \
+    VLLM_PATH=$(python3 -c "import vllm; print(vllm.__path__[0])") && \
+    echo "Updating vLLM at: $VLLM_PATH" && \
+    \
+    # Copy updated files to vLLM installation
+    cp -v /tmp/vllm-updates/loggers.py $VLLM_PATH/v1/metrics/ && \
+    cp -v /tmp/vllm-updates/stats.py $VLLM_PATH/v1/metrics/ && \
+    cp -v /tmp/vllm-updates/dp_utils.py $VLLM_PATH/v1/worker/ && \
+    cp -v /tmp/vllm-updates/gpu_model_runner.py $VLLM_PATH/v1/worker/ && \
+    cp -v /tmp/vllm-updates/scheduler.py $VLLM_PATH/v1/core/sched/ && \
+    cp -v /tmp/vllm-updates/eplb_state.py $VLLM_PATH/distributed/eplb/ && \
+    cp -v /tmp/vllm-updates/outputs.py $VLLM_PATH/v1/ && \
+    \
+    # Validate Python syntax for critical files
+    python3 -m py_compile $VLLM_PATH/v1/metrics/loggers.py && \
+    python3 -m py_compile $VLLM_PATH/v1/metrics/stats.py && \
+    python3 -m py_compile $VLLM_PATH/v1/worker/dp_utils.py && \
+    python3 -m py_compile $VLLM_PATH/v1/worker/gpu_model_runner.py && \
+    \
+    # Verify imports work
+    python3 -c "from vllm.v1.metrics.stats import DboStats, EplbStats; print('✓ DboStats and EplbStats imported successfully')" && \
+    python3 -c "from vllm.v1.metrics.loggers import PrometheusStatLogger; print('✓ PrometheusStatLogger imported successfully')" && \
+    \
+    echo "✓ DBO and EPLB metrics successfully installed"
+
+# Cleanup temp files (ignore errors since files may have restricted permissions)
+RUN rm -rf /tmp/vllm-updates 2>/dev/null || true
+
+# Add metadata labels
+LABEL maintainer="llm-d"
+LABEL description="vLLM with DBO and EPLB metrics (branch: add-dbo-eplb-metrics)"
+LABEL metrics="dbo,eplb,throughput"

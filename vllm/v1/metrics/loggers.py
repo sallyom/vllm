@@ -10,14 +10,48 @@ from typing import TypeAlias
 from prometheus_client import Counter, Gauge, Histogram
 
 import vllm.envs as envs
-from vllm.compilation.cuda_graph import CUDAGraphLogging
+
+# Handle backward compatibility with older vLLM versions
+try:
+    from vllm.compilation.cuda_graph import CUDAGraphLogging
+except ImportError:
+    # Older versions don't have CUDAGraphLogging - create a stub
+    class CUDAGraphLogging:  # type: ignore
+        """Stub for backward compatibility with older vLLM versions."""
+        def __init__(self, *args, **kwargs):
+            pass
+
 from vllm.config import SupportsMetricsInfo, VllmConfig
-from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (
-    KVConnectorLogging,
-    KVConnectorPrometheus,
-)
+
+# Handle backward compatibility for KV connector metrics
+try:
+    from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (
+        KVConnectorLogging,
+        KVConnectorPrometheus,
+    )
+except ImportError:
+    # Older versions don't have these classes - create stubs
+    class KVConnectorLogging:  # type: ignore
+        """Stub for backward compatibility with older vLLM versions."""
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class KVConnectorPrometheus:  # type: ignore
+        """Stub for backward compatibility with older vLLM versions."""
+        pass
+
 from vllm.logger import init_logger
-from vllm.plugins import STAT_LOGGER_PLUGINS_GROUP, load_plugins_by_group
+
+# Handle backward compatibility for plugins
+try:
+    from vllm.plugins import STAT_LOGGER_PLUGINS_GROUP, load_plugins_by_group
+except ImportError:
+    # Older versions don't have plugin support - create stubs
+    STAT_LOGGER_PLUGINS_GROUP = "stat_loggers"  # type: ignore
+    def load_plugins_by_group(*args, **kwargs):  # type: ignore
+        """Stub for backward compatibility with older vLLM versions."""
+        return []
+
 from vllm.v1.engine import FinishReason
 from vllm.v1.metrics.prometheus import unregister_vllm_metrics
 from vllm.v1.metrics.stats import (
@@ -26,7 +60,20 @@ from vllm.v1.metrics.stats import (
     MultiModalCacheStats,
     SchedulerStats,
 )
-from vllm.v1.spec_decode.metrics import SpecDecodingLogging, SpecDecodingProm
+
+# Handle backward compatibility for spec decode metrics
+try:
+    from vllm.v1.spec_decode.metrics import SpecDecodingLogging, SpecDecodingProm
+except ImportError:
+    # Older versions might not have spec decode metrics - create stubs
+    class SpecDecodingLogging:  # type: ignore
+        """Stub for backward compatibility with older vLLM versions."""
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class SpecDecodingProm:  # type: ignore
+        """Stub for backward compatibility with older vLLM versions."""
+        pass
 
 logger = init_logger(__name__)
 

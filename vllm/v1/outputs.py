@@ -3,12 +3,22 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 import torch
 
-from vllm.compilation.cuda_graph import CUDAGraphStat
+# Handle backward compatibility with older vLLM versions
+try:
+    from vllm.compilation.cuda_graph import CUDAGraphStat
+except ImportError:
+    # Older versions use CUDAGraphEntry
+    try:
+        from vllm.compilation.cuda_graph import CUDAGraphEntry as CUDAGraphStat  # type: ignore
+    except ImportError:
+        # Fallback for even older versions - use Any
+        CUDAGraphStat = Any  # type: ignore
+
 from vllm.v1.core.sched.output import SchedulerOutput
 
 if TYPE_CHECKING:

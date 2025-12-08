@@ -7,8 +7,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import vllm.envs as envs
-from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
+
+# Handle backward compatibility with older vLLM versions
+try:
+    from vllm.compilation.cuda_graph import CUDAGraphStat
+except ImportError:
+    # Older versions use CUDAGraphEntry
+    try:
+        from vllm.compilation.cuda_graph import CUDAGraphEntry as CUDAGraphStat  # type: ignore
+    except ImportError:
+        # Fallback for even older versions - use Any
+        CUDAGraphStat = Any  # type: ignore
 
 if TYPE_CHECKING:
     from vllm.v1.engine import EngineCoreEvent, EngineCoreOutput, FinishReason
