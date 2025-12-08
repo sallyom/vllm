@@ -1157,6 +1157,35 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                     scheduler_stats.kv_connector_stats, engine_idx
                 )
 
+            if scheduler_stats.eplb_stats is not None:
+                eplb = scheduler_stats.eplb_stats
+                self.record_eplb_stats(
+                    avg_tokens=eplb.avg_tokens,
+                    max_tokens=eplb.max_tokens,
+                    balancedness=eplb.balancedness,
+                    layer=eplb.layer,
+                    model_name=eplb.model_name,
+                    engine_idx=engine_idx,
+                )
+                if eplb.rearrangement_duration > 0:
+                    self.record_eplb_rearrangement(
+                        duration=eplb.rearrangement_duration, engine_idx=engine_idx
+                    )
+
+            if scheduler_stats.dbo_stats is not None:
+                dbo = scheduler_stats.dbo_stats
+                if dbo.prefill_active or dbo.decode_active:
+                    self.record_dbo_state(dbo.prefill_active, "prefill", engine_idx)
+                    self.record_dbo_state(dbo.decode_active, "decode", engine_idx)
+                if dbo.first_ubatch_tokens > 0:
+                    self.record_ubatch_size(dbo.first_ubatch_tokens, "first", engine_idx)
+                if dbo.second_ubatch_tokens > 0:
+                    self.record_ubatch_size(
+                        dbo.second_ubatch_tokens, "second", engine_idx
+                    )
+                if dbo.fallout_reason:
+                    self.record_dbo_fallout(dbo.fallout_reason, engine_idx)
+
             if (
                 self.kv_cache_metrics_enabled
                 and scheduler_stats.kv_cache_eviction_events
