@@ -9,6 +9,7 @@ import torch.distributed as dist
 from vllm.config import ParallelConfig
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.logger import init_logger
+from vllm.v1.metrics.stats import DboStats
 from vllm.v1.worker.ubatch_utils import (
     check_ubatch_thresholds,
     is_second_ubatch_empty,
@@ -188,7 +189,7 @@ def coordinate_batch_across_dp(
     uniform_decode: bool | None = None,
     num_scheduled_tokens_per_request: np.ndarray | None = None,
     cudagraph_mode: int = 0,
-) -> tuple[bool, torch.Tensor | None, int]:
+) -> tuple[bool, torch.Tensor | None, int, DboStats | None]:
     """
     Coordinates amongst all DP ranks to determine if and how the full batch
     should be split into microbatches.
@@ -207,19 +208,20 @@ def coordinate_batch_across_dp(
         cudagraph_mode: The cudagraph mode for this rank (0=NONE, 1=PIECEWISE, 2=FULL)
 
     Returns: tuple[
-        ubatch_slices: if this is set then all DP ranks have agreed to
+        should_ubatch: if this is set then all DP ranks have agreed to
         microbatch
         num_tokens_after_padding: A tensor containing the total number of
         tokens per-microbatch for each DP rank including padding. Will be
         padded up to the max value across all DP ranks when allow_dp_padding
         is True.
         synced_cudagraph_mode: The synchronized cudagraph mode (min across ranks)
+        dbo_stats: DBO metrics if DBO was attempted, None otherwise
     ]
 
     """
     if parallel_config.data_parallel_size == 1:
         # Early exit.
-        return False, None, cudagraph_mode
+        return False, None, cudagraph_mode, None
 
     # If the caller has explicitly enabled microbatching.
     should_attempt_ubatching = False
@@ -249,6 +251,18 @@ def coordinate_batch_across_dp(
         parallel_config,
     )
 
-    # TODO: Return DboStats with fallout_reason in future
-    # For now, return cudagraph_mode for upstream compatibility
-    return (should_ubatch, num_tokens_after_padding, synced_cudagraph_mode)
+    # Create DboStats if DBO was attempted (allow_microbatching was True)
+    dbo_stats = None
+    if allow_microbatching:
+        # Determine phase based on uniform_decode
+        is_decode = uniform_decode if uniform_decode is not None else False
+
+        dbo_stats = DboStats(
+            prefill_active=not is_decode and should_ubatch,
+            decode_active=is_decode and should_ubatch,
+            first_ubatch_tokens=0,  # Will be set in ubatch_utils when slices are created
+            second_ubatch_tokens=0,  # Will be set in ubatch_utils when slices are created
+            fallout_reason=fallout_reason,
+        )
+
+    return (should_ubatch, num_tokens_after_padding, synced_cudagraph_mode, dbo_stats)
