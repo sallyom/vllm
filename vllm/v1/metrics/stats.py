@@ -164,14 +164,14 @@ class KVCacheEvictionEvent:
 class EplbStats:
     """Stats for Expert-Parallel Load Balancing (EPLB)."""
 
-    avg_tokens: float = 0.0
-    """Average token load across all EP ranks."""
+    avg_tokens_per_rank: float = 0.0
+    """Average token load per EP rank (summed across all experts on rank)."""
 
-    max_tokens: float = 0.0
-    """Maximum token load across all EP ranks."""
+    max_tokens_per_rank: float = 0.0
+    """Maximum token load across all EP ranks (summed across all experts on rank)."""
 
     balancedness: float = 0.0
-    """Load balancedness ratio (avg_tokens / max_tokens)."""
+    """Load balancedness ratio (avg_tokens_per_rank / max_tokens_per_rank)."""
 
     layer: int = 0
     """MoE layer index for these stats."""
@@ -181,6 +181,12 @@ class EplbStats:
 
     rearrangement_duration: float = 0.0
     """Duration of last rearrangement in seconds (0 if no rearrangement)."""
+
+    is_rebalancing: bool = False
+    """Whether EPLB is currently performing a rebalancing operation."""
+
+    per_expert_loads: list[float] | None = None
+    """Per-expert token loads (debug mode only). High cardinality!"""
 
 
 @dataclass

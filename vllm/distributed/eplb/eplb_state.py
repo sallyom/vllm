@@ -264,11 +264,21 @@ class EplbState:
         self.latest_balancedness_metrics: dict[str, dict[str, float]] = {}
         """
         Latest balancedness metrics per model.
-        Format: {model_name: {'avg_tokens': float, 'max_tokens': float, 'balancedness': float}}
+        Format: {model_name: {'avg_tokens_per_rank': float, 'max_tokens_per_rank': float, 'balancedness': float}}
+        """
+        self.latest_per_expert_loads: dict[str, list[float]] = {}
+        """
+        Latest per-expert token loads per model (debug mode only).
+        Format: {model_name: [load_0, load_1, ..., load_N]}
+        Only populated when debug_per_expert_metrics is enabled.
         """
         self.last_rearrangement_duration: float = 0.0
         """
         Duration of the last EPLB rearrangement operation in seconds.
+        """
+        self.is_rebalancing: bool = False
+        """
+        Whether EPLB is currently performing a rebalancing operation.
         """
         if self.device.type == "cuda":
             self.cuda_device_index = self.device.index
@@ -595,15 +605,23 @@ class EplbState:
 
                 # Store metrics for Prometheus export
                 self.latest_balancedness_metrics[eplb_model_state.model_name] = {
-                    "avg_tokens": avg_tokens,
-                    "max_tokens": max_tokens,
+                    "avg_tokens_per_rank": avg_tokens,
+                    "max_tokens_per_rank": max_tokens,
                     "balancedness": balancedness,
                 }
 
+                # Store per-expert loads for debug metrics (if enabled)
+                if self.parallel_config.eplb_config.debug_per_expert_metrics:
+                    # Sum expert loads across all layers: (num_physical_experts,)
+                    per_expert_total = expert_load_pass.sum(dim=0).float()
+                    self.latest_per_expert_loads[eplb_model_state.model_name] = (
+                        per_expert_total.tolist()
+                    )
+
                 if ep_group.rank() == 0:
                     logger.info(
-                        "EPLB step: %d for model %s: avg_tokens=%.2f, "
-                        "max_tokens=%d, balancedness=%.4f",
+                        "EPLB step: %d for model %s: avg_tokens_per_rank=%.2f, "
+                        "max_tokens_per_rank=%d, balancedness=%.4f",
                         self.expert_rearrangement_step,
                         eplb_model_state.model_name,
                         avg_tokens,
@@ -700,6 +718,10 @@ class EplbState:
 
         ep_group = get_ep_group().device_group
         ep_rank = ep_group.rank()
+
+        # Set rebalancing flag at start
+        if not is_profile:
+            self.is_rebalancing = True
 
         time_start = None
         is_main_rank = ep_rank == 0
@@ -869,6 +891,9 @@ class EplbState:
                 rearrangement_duration = time_end - time_start
                 # Store for Prometheus metrics
                 self.last_rearrangement_duration = rearrangement_duration
+                # Clear rebalancing flag for sync mode
+                if not is_profile:
+                    self.is_rebalancing = False
                 if is_main_rank:
                     logger.info(
                         "Rearranged experts%sin %.2f seconds.",
@@ -1030,6 +1055,9 @@ class EplbState:
         model_state.new_physical_to_logical_map = None
         model_state.new_logical_to_physical_map = None
         model_state.new_logical_replica_count = None
+        # Clear rebalancing flag for async mode
+        if not is_profile:
+            self.is_rebalancing = False
 
     @staticmethod
     def recv_state() -> tuple[list[torch.Tensor], list[torch.Tensor]]:

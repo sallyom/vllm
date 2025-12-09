@@ -69,6 +69,21 @@ class EPLBConfig:
     policy: EPLBPolicyOption = "default"
     """The policy type for expert parallel load balancing (EPLB)."""
 
+    debug_per_expert_metrics: bool = False
+    """
+    Enable per-expert debug metrics (HIGH CARDINALITY).
+    WARNING: Creates one time series per (layer, expert) combination.
+    For DeepSeek-R1: 60 layers × 256 experts = 15,360 time series.
+    Only use for temporary debugging. See also: debug_metrics_duration.
+    """
+
+    debug_metrics_duration: int | None = None
+    """
+    Auto-disable debug metrics after this many seconds.
+    If None, debug metrics remain enabled until server restart.
+    Recommended: 300 (5 minutes) for debugging sessions.
+    """
+
 
 @config
 @dataclass

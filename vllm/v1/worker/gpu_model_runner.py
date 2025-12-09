@@ -3301,13 +3301,23 @@ class GPUModelRunner(
             if self.eplb_state.latest_balancedness_metrics:
                 model_name, metrics = next(iter(self.eplb_state.latest_balancedness_metrics.items()))
                 from vllm.v1.metrics.stats import EplbStats
+
+                # Get per-expert loads if debug mode is enabled
+                per_expert_loads = None
+                if self.parallel_config.eplb_config.debug_per_expert_metrics:
+                    per_expert_loads = self.eplb_state.latest_per_expert_loads.get(
+                        model_name
+                    )
+
                 eplb_stats = EplbStats(
-                    avg_tokens=metrics["avg_tokens"],
-                    max_tokens=metrics["max_tokens"],
+                    avg_tokens_per_rank=metrics["avg_tokens_per_rank"],
+                    max_tokens_per_rank=metrics["max_tokens_per_rank"],
                     balancedness=metrics["balancedness"],
                     layer=0,  # Aggregated across layers
                     model_name=model_name,
                     rearrangement_duration=self.eplb_state.last_rearrangement_duration,
+                    is_rebalancing=self.eplb_state.is_rebalancing,
+                    per_expert_loads=per_expert_loads,
                 )
                 # Reset rearrangement duration after reporting
                 self.eplb_state.last_rearrangement_duration = 0.0

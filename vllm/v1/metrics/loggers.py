@@ -1069,21 +1069,31 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
         # Layer labels will be added dynamically when recording
         self.gauge_eplb_balancedness = gauge_eplb_balancedness
 
-        gauge_expert_load_max = self._gauge_cls(
-            name="vllm:expert_load_max_tokens",
-            documentation="Maximum expert load in tokens across all ranks",
+        gauge_eplb_max_tokens_per_rank = self._gauge_cls(
+            name="vllm:eplb_max_tokens_per_rank",
+            documentation="Maximum token load across all EP ranks",
             multiprocess_mode="mostrecent",
             labelnames=labelnames + ["layer"],
         )
-        self.gauge_expert_load_max = gauge_expert_load_max
+        self.gauge_eplb_max_tokens_per_rank = gauge_eplb_max_tokens_per_rank
 
-        gauge_expert_load_avg = self._gauge_cls(
-            name="vllm:expert_load_avg_tokens",
-            documentation="Average expert load in tokens across all ranks",
+        gauge_eplb_avg_tokens_per_rank = self._gauge_cls(
+            name="vllm:eplb_avg_tokens_per_rank",
+            documentation="Average token load per EP rank",
             multiprocess_mode="mostrecent",
             labelnames=labelnames + ["layer"],
         )
-        self.gauge_expert_load_avg = gauge_expert_load_avg
+        self.gauge_eplb_avg_tokens_per_rank = gauge_eplb_avg_tokens_per_rank
+
+        gauge_eplb_rebalancing = self._gauge_cls(
+            name="vllm:eplb_rebalancing",
+            documentation="Whether EPLB is currently rebalancing (1=yes, 0=no)",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_eplb_rebalancing = make_per_engine(
+            gauge_eplb_rebalancing, engine_indexes, model_name
+        )
 
         counter_eplb_rearrangements = self._counter_cls(
             name="vllm:eplb_rearrangements_total",
@@ -1103,6 +1113,47 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
         self.histogram_eplb_rearrangement_duration = make_per_engine(
             histogram_eplb_rearrangement_duration, engine_indexes, model_name
         )
+
+        #
+        # EPLB Debug Metrics (High Cardinality - Opt-in Only)
+        #
+        self.debug_per_expert_enabled = (
+            vllm_config.parallel_config.enable_eplb
+            and vllm_config.parallel_config.eplb_config.debug_per_expert_metrics
+        )
+        self.debug_metrics_start_time: float | None = None
+        self.debug_metrics_duration: int | None = None
+
+        if self.debug_per_expert_enabled:
+            self.debug_metrics_start_time = time.time()
+            self.debug_metrics_duration = (
+                vllm_config.parallel_config.eplb_config.debug_metrics_duration
+            )
+
+            gauge_per_expert_load = self._gauge_cls(
+                name="vllm:expert_load_per_expert_tokens_DEBUG",
+                documentation=(
+                    "DEBUG: Per-expert token load (HIGH CARDINALITY). "
+                    "Only enabled when debug_per_expert_metrics=True."
+                ),
+                multiprocess_mode="mostrecent",
+                labelnames=labelnames + ["layer", "expert_id"],
+            )
+            self.gauge_per_expert_load = gauge_per_expert_load
+
+            # Log warning about cardinality
+            if len(engine_indexes) > 0:
+                logger.warning(
+                    "Per-expert debug metrics ENABLED. "
+                    "This creates HIGH CARDINALITY metrics! "
+                    "Expected: ~15,360 time series for DeepSeek-R1 scale models. "
+                    "Auto-disable after %s seconds.",
+                    self.debug_metrics_duration
+                    if self.debug_metrics_duration
+                    else "NEVER (no timeout set)",
+                )
+        else:
+            self.gauge_per_expert_load = None
 
     def log_metrics_info(self, type: str, config_obj: SupportsMetricsInfo):
         metrics_info = config_obj.metrics_info()
@@ -1173,12 +1224,14 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             if scheduler_stats.eplb_stats is not None:
                 eplb = scheduler_stats.eplb_stats
                 self.record_eplb_stats(
-                    avg_tokens=eplb.avg_tokens,
-                    max_tokens=eplb.max_tokens,
+                    avg_tokens_per_rank=eplb.avg_tokens_per_rank,
+                    max_tokens_per_rank=eplb.max_tokens_per_rank,
                     balancedness=eplb.balancedness,
                     layer=eplb.layer,
                     model_name=eplb.model_name,
                     engine_idx=engine_idx,
+                    is_rebalancing=eplb.is_rebalancing,
+                    per_expert_loads=eplb.per_expert_loads,
                 )
                 if eplb.rearrangement_duration > 0:
                     self.record_eplb_rearrangement(
@@ -1343,23 +1396,52 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
 
     def record_eplb_stats(
         self,
-        avg_tokens: float,
-        max_tokens: float,
+        avg_tokens_per_rank: float,
+        max_tokens_per_rank: float,
         balancedness: float,
         layer: int,
         model_name: str,
         engine_idx: int = 0,
+        is_rebalancing: bool = False,
+        per_expert_loads: list[float] | None = None,
     ):
         """Record EPLB load balancing metrics for a specific layer."""
+        # Check if debug mode should be auto-disabled
+        if self.debug_per_expert_enabled and self.debug_metrics_duration is not None:
+            assert self.debug_metrics_start_time is not None
+            elapsed = time.time() - self.debug_metrics_start_time
+            if elapsed > self.debug_metrics_duration:
+                logger.info(
+                    "Debug metrics duration expired (%.1f seconds), "
+                    "disabling per-expert metrics",
+                    elapsed,
+                )
+                self.debug_per_expert_enabled = False
+
+        # Record aggregated metrics (always enabled)
         self.gauge_eplb_balancedness.labels(model_name, str(engine_idx), str(layer)).set(
             balancedness
         )
-        self.gauge_expert_load_max.labels(model_name, str(engine_idx), str(layer)).set(
-            max_tokens
-        )
-        self.gauge_expert_load_avg.labels(model_name, str(engine_idx), str(layer)).set(
-            avg_tokens
-        )
+        self.gauge_eplb_max_tokens_per_rank.labels(
+            model_name, str(engine_idx), str(layer)
+        ).set(max_tokens_per_rank)
+        self.gauge_eplb_avg_tokens_per_rank.labels(
+            model_name, str(engine_idx), str(layer)
+        ).set(avg_tokens_per_rank)
+
+        # Record rebalancing state (instance-level, no layer dimension)
+        self.gauge_eplb_rebalancing[engine_idx].set(1 if is_rebalancing else 0)
+
+        # Record per-expert debug metrics (only when enabled)
+        if (
+            self.debug_per_expert_enabled
+            and per_expert_loads is not None
+            and self.gauge_per_expert_load is not None
+        ):
+            for expert_id, load in enumerate(per_expert_loads):
+                self.gauge_per_expert_load.labels(
+                    model_name, str(engine_idx), str(layer), str(expert_id)
+                ).set(float(load))
 
     def record_eplb_rearrangement(self, duration: float, engine_idx: int = 0):
         """Record an EPLB rearrangement event."""
